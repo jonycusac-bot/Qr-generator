@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation for projects
+    function isValidProject(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.clientName is string && data.clientName.size() <= 200
+        && data.projectName is string && data.projectName.size() <= 200
+        && data.shortCode is string && data.shortCode.size() <= 100
+        && data.destinationUrl is string && data.destinationUrl.size() <= 2048
+        && (data.status == 'active' || data.status == 'paused');
+    }
+
+    // Validation for users
+    function isValidUser(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 120
+        && data.email is string && data.email.size() <= 200
+        && (data.role == 'admin' || data.role == 'technician' || data.role == 'viewer');
+    }
+
+    // Validation for scan events
+    function isValidScan(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.projectId is string && data.projectId.size() <= 128
+        && data.shortCode is string && data.shortCode.size() <= 100
+        && data.scannedAt is string && data.scannedAt.size() <= 64;
+    }
+
+    // Projects collection
+    match /projects/{projectId} {
+      allow read: if true;
+      allow create: if isValidId(projectId) && isValidProject(incoming());
+      allow update: if isValidId(projectId) && isValidProject(incoming());
+      allow delete: if isValidId(projectId);
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if isValidId(userId) && isValidUser(incoming());
+      allow update: if isValidId(userId) && isValidUser(incoming());
+      allow delete: if isValidId(userId);
+    }
+
+    // Scans collection (analytics)
+    match /scans/{scanId} {
+      allow read: if true;
+      allow create: if isValidId(scanId) && isValidScan(incoming());
+      allow update, delete: if false;
+    }
+
+    // Fallback: default-deny all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

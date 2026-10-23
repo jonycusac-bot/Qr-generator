@@ -1,0 +1,78 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "Dynamic QR project representing a client installation with editable OneDrive destination URL",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier of the installation project" },
+        "clientName": { "type": "string", "description": "Client or homeowner name" },
+        "projectName": { "type": "string", "description": "Name or description of the installation" },
+        "shortCode": { "type": "string", "description": "Short code used in dynamic URL /r/{shortCode}" },
+        "destinationUrl": { "type": "string", "description": "Current target URL in OneDrive or SharePoint" },
+        "destinationHistory": { "type": "array", "description": "Audit trail of previous destination URLs" },
+        "notes": { "type": "string", "description": "Installation notes or included documents" },
+        "technician": { "type": "string", "description": "Name of assigned field technician" },
+        "technicianId": { "type": "string", "description": "User ID of assigned technician" },
+        "status": { "type": "string", "enum": ["active", "paused"], "description": "Status of QR redirection" },
+        "qrTargetType": { "type": "string", "enum": ["dynamic", "direct"], "description": "Whether QR encodes dynamic redirection or direct link" },
+        "qrDesign": { "type": "object", "description": "Visual customization settings for the QR sticker" },
+        "scanCount": { "type": "number", "description": "Total number of times this QR code was scanned" },
+        "createdAt": { "type": "string", "description": "ISO timestamp when project was created" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp when project was last updated" },
+        "lastScannedAt": { "type": "string", "description": "ISO timestamp of most recent scan" }
+      },
+      "required": ["id", "clientName", "projectName", "shortCode", "destinationUrl", "status"]
+    },
+    "AppUser": {
+      "title": "AppUser",
+      "description": "Technician or administrator authorized in the installation manager",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier of the user" },
+        "name": { "type": "string", "description": "Full name of the technician or user" },
+        "email": { "type": "string", "description": "Email address of the user" },
+        "role": { "type": "string", "enum": ["admin", "technician", "viewer"], "description": "Role in the organization" },
+        "active": { "type": "boolean", "description": "Whether the user account is active" },
+        "createdAt": { "type": "string", "description": "Creation date" },
+        "installationsAssigned": { "type": "number", "description": "Number of assigned installations" }
+      },
+      "required": ["id", "name", "email", "role"]
+    },
+    "ScanEvent": {
+      "title": "ScanEvent",
+      "description": "Event logged when a QR code sticker is scanned",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier of the scan event" },
+        "projectId": { "type": "string", "description": "ID of the scanned project" },
+        "clientName": { "type": "string", "description": "Name of the client at time of scan" },
+        "projectName": { "type": "string", "description": "Name of the project at time of scan" },
+        "shortCode": { "type": "string", "description": "Short code scanned" },
+        "scannedAt": { "type": "string", "description": "ISO timestamp of scan" },
+        "deviceType": { "type": "string", "enum": ["mobile", "tablet", "desktop", "unknown"], "description": "Detected device category" },
+        "os": { "type": "string", "description": "Operating system name" },
+        "browser": { "type": "string", "description": "Browser name" },
+        "city": { "type": "string", "description": "City of scan" },
+        "country": { "type": "string", "description": "Country of scan" },
+        "ipMasked": { "type": "string", "description": "Anonymized IP address" },
+        "redirectUrl": { "type": "string", "description": "Target destination URL used" }
+      },
+      "required": ["id", "projectId", "shortCode", "scannedAt"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "#/entities/Project",
+      "description": "Installation projects and their dynamic QR configuration"
+    },
+    "/users/{userId}": {
+      "schema": "#/entities/AppUser",
+      "description": "Technician and team profiles"
+    },
+    "/scans/{scanId}": {
+      "schema": "#/entities/ScanEvent",
+      "description": "Scan analytics events logged by camera visits"
+    }
+  }
+}

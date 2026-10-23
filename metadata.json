@@ -1,0 +1,6 @@
+{
+  "name": "QR Dinámico - Gestor de Instalaciones",
+  "description": "Plataforma de códigos QR dinámicos para proyectos e instalaciones con redirección editable a OneDrive, personalización visual con logo, estadísticas y gestión de usuarios.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
