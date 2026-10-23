@@ -87,7 +87,7 @@ export const UserManagementView: React.FC = () => {
 
   const handleToggleStatus = async (user: AppUser) => {
     if (!isAdmin) return;
-    await updateUser(user.id, { active: !user.active });
+    try { await updateUser(user.id, { active: !user.active }); } catch { /* Shared error banner. */ }
   };
 
   const handleDelete = (user: AppUser) => {
@@ -100,8 +100,8 @@ export const UserManagementView: React.FC = () => {
 
   const confirmDeleteUser = async () => {
     if (userToDelete) {
-      await deleteUser(userToDelete.id);
-      setUserToDelete(null);
+      try { await deleteUser(userToDelete.id); setUserToDelete(null); }
+      catch { /* Shared error banner; leave the dialog open. */ }
     }
   };
 

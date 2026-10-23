@@ -61,7 +61,7 @@ export const AnalyticsView: React.FC = () => {
     const devices = ['mobile', 'mobile', 'mobile', 'tablet', 'desktop'];
     const systems = ['iOS', 'Android', 'iOS', 'iPadOS', 'Windows'];
     const idx = Math.floor(Math.random() * devices.length);
-    await recordSimulatedScan(randomProject.shortCode, devices[idx], systems[idx]);
+    try { await recordSimulatedScan(randomProject.shortCode, devices[idx], systems[idx]); } catch { /* Shared error banner. */ }
   };
 
   return (

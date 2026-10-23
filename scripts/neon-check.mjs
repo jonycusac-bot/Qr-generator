@@ -15,9 +15,8 @@ const pool = new pg.Pool({
 try {
   const client = await pool.connect();
   try {
-    await client.query('CREATE TABLE IF NOT EXISTS qr_app_state (id integer PRIMARY KEY, state jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');
-    await client.query('ALTER TABLE qr_app_state ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()');
-    const result = await client.query('SELECT current_database() AS database, now() AS checked_at');
+    const result = await client.query("SELECT current_database() AS database, to_regclass('qr_app_state') AS state_table, now() AS checked_at");
+    if (!result.rows[0].state_table) throw new Error('Falta el esquema: ejecuta npm run db:migrate.');
     console.log(`Neon conectado correctamente. Base: ${result.rows[0].database}`);
   } finally {
     client.release();

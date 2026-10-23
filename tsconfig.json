@@ -1,4 +1,6 @@
 {
+  "include": ["src", "api", "tests", "scripts/**/*.ts", "server.ts", "state-store.ts", "neon.ts", "vite.config.ts"],
+  "exclude": ["node_modules", "dist", "export-*"],
   "compilerOptions": {
     "target": "ES2022",
     "experimentalDecorators": true,

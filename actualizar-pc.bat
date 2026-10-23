@@ -8,6 +8,8 @@ call npm ci
 if errorlevel 1 goto :error
 call npm test
 if errorlevel 1 goto :error
+call npm run lint
+if errorlevel 1 goto :error
 call npm run build
 if errorlevel 1 goto :error
 echo.

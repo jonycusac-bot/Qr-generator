@@ -1,51 +1,114 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { once } from 'node:events';
-
-test('open access preserves dynamic destinations; storage remains required in Vercel', async () => {
-  process.env.VERCEL = '1';
-  delete process.env.DATABASE_URL;
-  const { appReady, snapshotState, restoreState } = await import('../server.js');
-  const { default: cloudHandler } = await import('../api/index.js');
-  const app = await appReady;
+import type { AppState, StateStore } from '../state-store.js';
+import { requestJson } from '../src/utils/api.js';
+process.env.VERCEL = '1';
+delete process.env.DATABASE_URL;
+const { createApp } = await import('../server.js');
+function memoryStore(): StateStore & { data: AppState; failCommit: boolean; failRead: boolean } {
+  return {
+    data: { projects: [], users: [], scans: [] }, failCommit: false, failRead: false,
+    async transaction(work) {
+      if (this.failRead) throw new Error('Test connection unavailable');
+      const result = await work(structuredClone(this.data));
+      if (this.failCommit) throw new Error('Test commit rejected');
+      this.data = structuredClone(result);
+    },
+  };
+}
+async function serve(store: StateStore | null, password = '') {
+  const app = await createApp(store, password);
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
-  const base = `http://127.0.0.1:${address.port}`;
-  try {
-    assert.equal((await fetch(`${base}/api/projects`)).status, 200);
-    assert.equal((await fetch(`${base}/api/users`)).status, 200);
-    const headers = { 'Content-Type': 'application/json' };
-    const create = await fetch(`${base}/api/projects`, {
-      method: 'POST', headers,
-      body: JSON.stringify({ shortCode: 'cloud-test', destinationUrl: 'https://example.com/first' }),
-    });
-    assert.equal(create.status, 201);
-    const project = await create.json() as { id: string };
-    const saved = JSON.parse(JSON.stringify(snapshotState()));
-    restoreState({ ...saved, projects: [] });
-    assert.equal((await (await fetch(`${base}/api/projects`)).json() as unknown[]).length, 0);
-    restoreState(saved);
-    assert.equal((await fetch(`${base}/api/projects/${project.id}`, {
-      method: 'PUT', headers, body: JSON.stringify({ destinationUrl: 'https://example.com/second' }),
-    })).status, 200);
-    const updated = JSON.parse(JSON.stringify(snapshotState()));
-    restoreState(updated);
-    const redirect = await fetch(`${base}/r/cloud-test`, { redirect: 'manual' });
-    assert.equal(redirect.status, 302);
-    assert.equal(redirect.headers.get('location'), 'https://example.com/second');
-    assert.ok(snapshotState().scans.some(s => s.projectId === project.id));
-    await fetch(`${base}/api/projects/${project.id}`, { method: 'PUT', headers, body: JSON.stringify({ status: 'paused' }) });
-    assert.equal((await fetch(`${base}/r/cloud-test`)).status, 403);
-    assert.equal((await fetch(`${base}/api/projects/${project.id}`, { method: 'DELETE' })).status, 200);
-    assert.ok(!snapshotState().projects.some(p => p.id === project.id));
-    assert.deepEqual(Object.keys(snapshotState()).sort(), ['projects', 'scans', 'users']);
-    app.get('/cloud-config-test', (req, res) => { void cloudHandler(req, res); });
-    assert.equal((await fetch(`${base}/cloud-config-test`)).status, 503);
-  } finally {
+  return { base: `http://127.0.0.1:${address.port}`, close: async () => {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  }
+  } };
+}
+const headers = { 'Content-Type': 'application/json' };
+const json = (method: string, body: unknown) => ({ method, headers, body: JSON.stringify(body) });
+test('unified data: CRUD, immutable QR, redirects, scans, concurrent requests, archive and restart', async () => {
+  const store = memoryStore();
+  let live = await serve(store);
+  try {
+    assert.deepEqual(await (await fetch(`${live.base}/api/projects`)).json(), []);
+    const created = await fetch(`${live.base}/api/projects`, json('POST', { shortCode: 'stable-qr', destinationUrl: 'https://example.com/first', clientName: '<script>bad()</script>' }));
+    assert.equal(created.status, 201);
+    const project = await created.json();
+    assert.equal((await fetch(`${live.base}/api/projects`, json('POST', { shortCode: 'STABLE-QR' }))).status, 409);
+    assert.equal((await fetch(`${live.base}/api/projects`, json('POST', { destinationUrl: 'javascript:alert(1)' }))).status, 400);
+    assert.equal((await fetch(`${live.base}/api/projects`, json('POST', { shortCode: '' }))).status, 400);
+    assert.equal((await fetch(`${live.base}/api/projects`, json('POST', { qrDesign: null }))).status, 400);
+    assert.equal((await fetch(`${live.base}/api/projects/${project.id}`, json('PUT', { shortCode: 'changed' }))).status, 409);
+    const update = await fetch(`${live.base}/api/projects/${project.id}`, json('PUT', { id: 'forged', scanCount: 999, destinationHistory: [], destinationUrl: 'https://example.com/second', changeReason: 'Test' }));
+    assert.equal(update.status, 200);
+    const updated = await update.json();
+    assert.equal(updated.id, project.id); assert.equal(updated.scanCount, 0);
+    assert.equal(updated.destinationHistory[0].url, 'https://example.com/first');
+    await live.close(); live = await serve(store);
+    const redirect = await fetch(`${live.base}/r/stable-qr`, { redirect: 'manual' });
+    assert.equal(redirect.status, 302);
+    assert.equal(redirect.headers.get('location'), 'https://example.com/second');
+    assert.match(redirect.headers.get('cache-control')!, /no-store/);
+    assert.equal(store.data.scans.length, 1);
+    await Promise.all(Array.from({ length: 8 }, () => fetch(`${live.base}/r/stable-qr`, { redirect: 'manual' })));
+    assert.equal(store.data.projects[0].scanCount, 9, 'concurrent scans cannot overwrite one another');
+    assert.equal(store.data.scans.length, 9);
+    await fetch(`${live.base}/api/projects/${project.id}`, json('PUT', { status: 'paused' }));
+    const paused = await fetch(`${live.base}/r/stable-qr`);
+    assert.equal(paused.status, 403); assert.doesNotMatch(await paused.text(), /<script>bad\(\)<\/script>/);
+    await fetch(`${live.base}/api/projects/${project.id}`, json('PUT', { status: 'archived' }));
+    assert.equal((await fetch(`${live.base}/r/stable-qr`)).status, 403);
+    assert.equal((await fetch(`${live.base}/api/scans/record`, json('POST', { shortCode: 'unknown' }))).status, 404);
+    const userResponse = await fetch(`${live.base}/api/users`, json('POST', { name: 'Prueba', email: 'test@example.com' }));
+    assert.equal(userResponse.status, 201); const user = await userResponse.json();
+    await fetch(`${live.base}/api/users/${user.id}`, json('PUT', { name: 'Editado', id: 'forged' }));
+    assert.equal(store.data.users[0].id, user.id); assert.equal(store.data.users[0].name, 'Editado');
+    await fetch(`${live.base}/api/users/${user.id}`, { method: 'DELETE' });
+    await fetch(`${live.base}/api/projects/${project.id}`, { method: 'DELETE' });
+    const state = await (await fetch(`${live.base}/api/state`)).json();
+    assert.deepEqual(state.projects, []); assert.deepEqual(state.users, []);
+    assert.equal(state.scans.length, 9, 'deleting an installation preserves scan history');
+  } finally { await live.close(); }
+});
+test('failed read/commit returns 503 without fake success or redirect; queue recovers', async () => {
+  const store = memoryStore(); const live = await serve(store);
+  try {
+    store.failCommit = true;
+    assert.equal((await fetch(`${live.base}/api/projects`, json('POST', { shortCode: 'failed' }))).status, 503);
+    assert.deepEqual(store.data.projects, []);
+    store.failCommit = false;
+    await fetch(`${live.base}/api/projects`, json('POST', { shortCode: 'real', destinationUrl: 'https://example.com' }));
+    store.failCommit = true;
+    const redirect = await fetch(`${live.base}/r/real`, { redirect: 'manual' });
+    assert.equal(redirect.status, 503); assert.equal(redirect.headers.get('location'), null);
+    assert.equal(store.data.scans.length, 0);
+    store.failCommit = false; store.failRead = true;
+    assert.equal((await fetch(`${live.base}/api/state`)).status, 503);
+    store.failRead = false; assert.equal((await fetch(`${live.base}/api/projects`)).status, 200);
+  } finally { await live.close(); }
+  const unconfigured = await serve(null);
+  try {
+    assert.equal((await fetch(`${unconfigured.base}/api/state`)).status, 503);
+    assert.equal((await fetch(`${unconfigured.base}/r/anything`, { redirect: 'manual' })).status, 503);
+    await assert.rejects(() => requestJson(`${unconfigured.base}/api/projects`, json('POST', {})), /DATABASE_URL/);
+  } finally { await unconfigured.close(); }
 });
 
+test('public QR works while anonymous visitors cannot read or modify management data', async () => {
+  const store = memoryStore(); const live = await serve(store, 'test-panel-password');
+  try {
+    assert.equal((await fetch(`${live.base}/api/state`)).status, 401);
+    assert.equal((await fetch(`${live.base}/api/projects`, json('POST', { shortCode: 'demo' }))).status, 401);
+    const protectedRequest = json('POST', { shortCode: 'demo', destinationUrl: 'https://example.com' });
+    const created = await fetch(`${live.base}/api/projects`, { ...protectedRequest, headers: { ...protectedRequest.headers, 'X-Panel-Key': 'test-panel-password' } });
+    assert.equal(created.status, 201);
+    const qr = await fetch(`${live.base}/r/demo`, { redirect: 'manual' });
+    assert.equal(qr.status, 302); assert.equal(qr.headers.get('location'), 'https://example.com');
+    assert.equal((await fetch(`${live.base}/api/state`, { headers: { 'X-Panel-Key': 'wrong' } })).status, 401);
+    assert.equal((await fetch(`${live.base}/api/state`, { headers: { 'X-Panel-Key': 'test-panel-password' } })).status, 200);
+  } finally { await live.close(); }
+});

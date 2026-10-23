@@ -82,7 +82,7 @@ export const ProjectList: React.FC<ProjectListProps> = ({
 
   const handleToggleStatus = async (project: QRProject) => {
     const nextStatus: ProjectStatus = project.status === 'active' ? 'paused' : 'active';
-    await updateProject(project.id, { status: nextStatus });
+    try { await updateProject(project.id, { status: nextStatus }); } catch { /* Shared error banner. */ }
   };
 
   const handleDelete = (project: QRProject) => {
@@ -91,8 +91,8 @@ export const ProjectList: React.FC<ProjectListProps> = ({
 
   const confirmDelete = async () => {
     if (projectToDelete) {
-      await deleteProject(projectToDelete.id);
-      setProjectToDelete(null);
+      try { await deleteProject(projectToDelete.id); setProjectToDelete(null); }
+      catch { /* Shared error banner; leave the dialog open. */ }
     }
   };
 
@@ -126,9 +126,9 @@ export const ProjectList: React.FC<ProjectListProps> = ({
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Sincronización OneDrive</p>
-            <h3 className="text-2xl font-bold text-emerald-600 mt-1">100%</h3>
-            <p className="text-xs text-slate-500 mt-0.5">Redirección dinámica activa</p>
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Destinos configurados</p>
+            <h3 className="text-2xl font-bold text-emerald-600 mt-1">{projects.filter(p => p.status === 'active' && !!p.destinationUrl).length}</h3>
+            <p className="text-xs text-slate-500 mt-0.5">Instalaciones activas con enlace</p>
           </div>
           <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center border border-emerald-100">
             <FolderSync className="w-6 h-6" />
@@ -298,10 +298,6 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                   {/* Text details */}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <span className="text-xs font-mono font-bold text-sky-600 bg-sky-50 px-2 py-0.5 rounded-md border border-sky-100">
-                        /r/{project.shortCode}
-                      </span>
-
                       {project.status === 'active' ? (
                         <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>

@@ -1,116 +1,24 @@
-# Guía de Instalación en Windows con Cloudflare Tunnel
+# Desarrollo y pruebas en Windows
 
-Esta guía te permitirá desplegar el sistema **Illusion Dynamic QR** en un PC con Windows en tu empresa, accesible desde cualquier teléfono móvil del mundo mediante tu propio dominio y con certificado SSL (HTTPS) gratuito.
+La arquitectura elegida es Vercel + Neon + OneDrive/SharePoint. El PC se utiliza para desarrollar y probar; no necesita permanecer encendido para servir la web publicada en Vercel.
 
----
+En `C:\Users\Usuario\Desktop\QR`:
 
-## Requisitos Previos
+```powershell
+npm ci
+# Configura .env.local con DATABASE_URL y DATABASE_URL_UNPOOLED de Neon.
+npm run db:migrate
+npm run db:check
+npm test
+npm run lint
+npm run build
+npm start
+```
 
-1. **PC con Windows** (Windows 10, 11 o Windows Server) con conexión a Internet continua.
-2. **Node.js LTS** instalado ([nodejs.org](https://nodejs.org/)).
-3. **Cuenta gratuita en Cloudflare** ([dash.cloudflare.com](https://dash.cloudflare.com/)).
-4. **Dominio web** gestionado en Cloudflare (ej: `tuempresa.es`).
+Abre http://localhost:3000. `iniciar.bat` arranca el servidor; `compilar.bat` instala las dependencias fijadas y compila. Después de subir cambios a GitHub, `actualizar-pc.bat` descarga mediante fast-forward, instala, prueba, comprueba TypeScript y compila. Si hay cambios locales de código, resuélvelos antes de actualizar.
 
----
+El servidor necesita Internet para acceder a Neon. Sin base de datos no se guardan cambios en un JSON alternativo. Las credenciales solo se configuran en el servidor; `.env.local` no se publica.
 
-## Paso 1: Descargar y preparar la aplicación en el PC
+Para probar desde un móvil en la misma red, abre `http://IP-DEL-PC:3000`. El QR debe contener esa dirección accesible o, para uso definitivo, el dominio HTTPS estable del despliegue Vercel. Los enlaces con localhost solo funcionan en el propio PC.
 
-1. Descomprime los archivos del proyecto en tu carpeta:
-   `"C:\Qr illusion"`
-2. Abre la consola **PowerShell** o **CMD** como Administrador y navega hasta la carpeta:
-   ```powershell
-   cd "C:\Qr illusion"
-   ```
-3. Crea el archivo `.env.local` dentro de la carpeta y añade la cadena **Pooled connection** de Neon:
-   ```env
-   PORT=3000
-   NODE_ENV=production
-   DATABASE_URL=postgresql://usuario:password@host-pooler.region.aws.neon.tech/neondb?sslmode=require
-   ```
-   No copies literalmente el ejemplo: utiliza el valor entregado por Neon. No subas `.env.local` a GitHub.
-4. Comprueba la conexión:
-   ```powershell
-   npm run db:check
-   ```
-5. Instala las dependencias y compila para producción (o simplemente haz doble clic en `compilar.bat`):
-   ```powershell
-   npm install
-   npm run build
-   ```
-6. Prueba que arranca ejecutando (o doble clic en `iniciar.bat`):
-   ```powershell
-   npm start
-   ```
-   Deberás ver: `[Server] Dynamic QR App running on http://0.0.0.0:3000`.
-   Abre en tu navegador `http://localhost:3000` para comprobar que carga. Pulsa `Ctrl + C` para detenerlo.
-
----
-
-## Paso 2: Crear el Túnel en Cloudflare (Sin abrir puertos en el Router)
-
-1. Inicia sesión en [Cloudflare Zero Trust](https://one.dash.cloudflare.com/).
-2. En el menú lateral izquierdo ve a **Networks** > **Tunnels**.
-3. Haz clic en **Create a Tunnel** (o *Add a Tunnel*).
-4. Elige el tipo de conector: **Cloudflared**.
-5. Ponle un nombre identificativo, por ejemplo: `pc-oficina-illusion`.
-6. En la siguiente pantalla, selecciona **Windows**. Cloudflare te mostrará un comando con un instalador y un token parecido a este:
-   ```cmd
-   winget install --id Cloudflare.cloudflared
-   cloudflared.exe service install eyJh...
-   ```
-7. Abre **PowerShell como Administrador** en el PC de la empresa, pega ese comando y pulsa Enter.
-   *Esto instalará Cloudflare como servicio oficial de Windows en segundo plano.*
-8. En el panel web de Cloudflare, pulsa **Next**.
-9. En la pestaña **Public Hostnames**, añade tu dirección:
-   - **Subdomain**: `qr`
-   - **Domain**: `tuempresa.es` (quedará `qr.tuempresa.es`)
-   - **Type**: `HTTP`
-   - **URL**: `localhost:3000`
-10. Haz clic en **Save tunnel**.
-
-¡Listo! A partir de este momento, cualquier persona en el mundo que entre a `https://qr.tuempresa.es` se conectará de forma cifrada y segura a tu PC de la oficina.
-
----
-
-## Paso 3: Configurar el servicio permanente en Windows (Auto-arranque)
-
-Para que el servidor Node.js se inicie automáticamente si el PC se apaga o reinicia:
-
-1. En PowerShell como Administrador:
-   ```powershell
-   npm install -g pm2 pm2-windows-service
-   ```
-2. Instala el servicio de Windows ejecutando:
-   ```powershell
-   pm2-service-install
-   ```
-   (Presiona Enter en las preguntas por defecto).
-3. Inicia la aplicación con PM2 desde la carpeta del proyecto:
-   ```powershell
-   cd "C:\Qr illusion"
-   pm2 start dist/server.cjs --name "illusion-qr"
-   pm2 save
-   ```
-4. Ahora, aunque se reinicie el ordenador tras una actualización de Windows, la aplicación arrancará sola sin necesidad de que nadie inicie sesión.
-
----
-
-## Paso 4: Base de datos y copias de seguridad
-
-Vercel y el PC utilizan la misma base de datos Neon indicada en `DATABASE_URL`. Los cambios hechos desde cualquiera de los dos quedan disponibles inmediatamente en el otro.
-
-Las copias de seguridad deben configurarse en Neon. El archivo `data/db.json` se utiliza únicamente como modo local de emergencia cuando `DATABASE_URL` no está configurada.
-
----
-
-## Paso 5: Fijar el dominio en el panel de la aplicación
-
-1. Abre la aplicación en `https://qr.tuempresa.es`.
-2. Al generar o ver una pegatina, pulsa en **Configurar Dominio Base de Redirección** e introduce:
-   `https://qr.tuempresa.es`
-3. A partir de ese momento, todas las pegatinas e imágenes PNG que descargues o imprimas llevarán grabado tu dominio corporativo definitivo.
-
-## Paso 6: Recibir nuevas versiones desde GitHub
-
-Cuando haya cambios publicados, ejecuta `actualizar-pc.bat` dentro de `C:\Qr illusion`. El archivo `.env.local` se mantiene solo en el PC y no se reemplaza.
-
+Consulta README.md para arquitectura, permisos, conservación de datos, publicación y pruebas de Neon.

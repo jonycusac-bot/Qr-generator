@@ -1,49 +1,54 @@
-# Qr generator
+# QR Generator
 
-Gestor de instalaciones con códigos QR dinámicos, etiquetas, perfiles de equipo y estadísticas.
+Gestor de instalaciones con QR dinámicos, etiquetas y estadísticas.
 
-## Pruebas locales
+## Arquitectura
+- Vercel: frontend React/Vite y servidor Express (`api/index.ts`).
+- Neon/PostgreSQL: instalaciones, destinos, perfiles e historial de escaneos.
+- OneDrive/SharePoint: documentación y permisos de acceso a los documentos. La aplicación guarda enlaces, no sincroniza archivos ni concede permisos de Microsoft.
+- GitHub: código, historial y actualizaciones.
 
-Requiere Node.js 22 o superior.
+El panel y las redirecciones `/r/:shortCode` utilizan la misma API y los mismos datos. No se utiliza Firebase/Firestore. El almacenamiento del navegador solo conserva preferencias de perfil y dirección base; no se considera una base de datos ni confirma guardados.
 
-1. Copia `.env.example` como `.env.local`.
-2. Sustituye `DATABASE_URL` por la cadena **Pooled connection** de Neon.
-3. Ejecuta:
+## Ejecutar en Windows
+Node.js 22 o superior (recomendado 24), npm.
 
-```sh
-npm ci
-npm run db:check
-npm run dev
-```
+1. `npm ci`.
+2. Configura `.env.local` siguiendo `.env.example`: `DATABASE_URL` pooled para la aplicación y `DATABASE_URL_UNPOOLED` directa para las migraciones.
+3. Primera instalación: `npm run db:migrate`. Es compatible con la tabla existente y no borra registros.
+4. `npm run db:check`.
+5. `npm run dev`, o `npm run build` y `npm start`.
+6. Abre http://localhost:3000. Para el móvil en la misma Wi-Fi, utiliza la dirección LAN del PC y permite el acceso al puerto 3000.
 
-Abrir http://localhost:3000. El panel abre directamente, sin contraseña ni PIN.
-Todos los perfiles tienen acceso completo. La selección de perfil sirve para asignaciones y filtros, y no verifica la identidad.
-Los permisos de las carpetas OneDrive/SharePoint siguen siendo responsabilidad de Microsoft 365.
+Sin conexión a Neon, la API de datos devuelve 503 y el panel muestra el error. No crea instalaciones ficticias ni confirma cambios que no se hayan guardado.
 
-## Compilar y arrancar
+## Publicar en Vercel
+Importa este repositorio y configura `DATABASE_URL` y `PANEL_PASSWORD` como secretos privados del servidor. Configura `VITE_QR_BASE_URL` con la dirección HTTPS pública estable (esta dirección no es un secreto). Nunca uses prefijos `VITE_` para credenciales. `vercel.json` publica `dist` y dirige `/api/*` y `/r/*` a Express. Para la primera base nueva, ejecuta previamente la migración con una conexión directa.
 
-```sh
-npm test
-npm run lint
-npm run build
-npm start
-```
+Usa un dominio HTTPS estable en los QR definitivos. Los códigos existentes son permanentes; puede cambiarse su destino sin reimprimirlos. Los destinos deben ser HTTP/HTTPS; los códigos duplicados se rechazan. Instalaciones pausadas o archivadas no redirigen. Los errores de base de datos no se ocultan con un almacenamiento alternativo.
 
-En Windows también se pueden usar `compilar.bat`, `iniciar.bat` y `actualizar-pc.bat`.
-Con `DATABASE_URL`, tanto el PC como Vercel utilizan la misma base Neon. Sin esa variable, el PC conserva el modo local de emergencia en `data/db.json`.
-Para probar desde un móvil, configurar como URL base la dirección del ordenador en la red. Ambos dispositivos deben poder acceder al puerto del servidor.
+La demo pública protege la API de gestión mediante `PANEL_PASSWORD`. La clave se introduce en el panel y solo se mantiene en memoria durante esa sesión de la página. Los enlaces `/r/*` siguen siendo públicos y no piden esta clave. Los perfiles del equipo son descriptivos, no cuentas individuales. Sin `PANEL_PASSWORD`, Vercel rechaza las operaciones de gestión. En desarrollo local sin esta variable se permite el acceso de pruebas.
 
-## Vercel
+## Datos existentes
+Se mantiene la tabla `qr_app_state` y su formato JSONB para conservar las instalaciones y los QR existentes. Las escrituras se confirman antes de responder. Una cola local y un bloqueo transaccional de Postgres evitan sobrescrituras entre solicitudes e instancias. Las lecturas no reescriben el estado si no cambia. Esta estructura está pensada para el piloto; un volumen elevado de escaneos requerirá separar tablas y consultas.
 
-El frontend se publica desde `dist`; `api/index.ts` atiende `/api/*` y `/r/*`.
-La única variable obligatoria es `DATABASE_URL`, usando la cadena **Pooled connection** de Neon con `sslmode=require`.
-Sin base de datos la API devuelve 503. El panel puede mostrar datos de ejemplo o una copia del navegador, pero eso no activa las redirecciones en el servidor.
-La aplicación crea automáticamente la tabla `qr_app_state` y serializa las operaciones para que Vercel y el PC no sobrescriban cambios simultáneos.
-No hay claves de acceso al panel. Si se publica por Internet, cualquier visitante puede gestionar instalaciones y usuarios.
+No se borran datos remotos de Firestore ni archivos anteriores de `data/`. Los registros que solo existan en Firestore o en el navegador no se importan automáticamente a Neon: hay que exportarlos, revisar duplicados por ID/código y hacer una importación controlada. No pulsar «Restaurar Datos de Demostración» para migrar; esa acción sustituye los datos de Neon por ejemplos.
 
-## Actualizar el PC
+El panel refresca los datos cada 30 segundos y al recuperar el foco. Los guardados se reflejan al confirmarlos el servidor. Las estadísticas no incluyen cifras de relleno.
 
-Después de publicar cambios en GitHub, abre la carpeta del proyecto en Windows y ejecuta `actualizar-pc.bat`. El script descarga los cambios, instala exactamente las dependencias, ejecuta las pruebas y recompila.
+## Verificación
+- `npm test`: CRUD, códigos únicos y permanentes, destino actualizado, escaneos concurrentes, archivo/pausa y errores de lectura/guardado sin falsas confirmaciones.
+- `npm run lint`: comprobación TypeScript del código activo.
+- `npm run build`: compilación para producción.
+- `npm run test:neon`: prueba real contra Neon con datos ficticios en un esquema temporal. Verifica persistencia y que el estado de producción no cambie; elimina solo su propio esquema de prueba.
 
-Nunca guardes `.env.local` ni la contraseña de Neon en GitHub.
+El ZIP y la carpeta `export-ai-studio-20261016` son una entrega histórica; no forman parte de la aplicación activa ni del despliegue Vercel. No subir `.env.local`, credenciales ni datos privados a GitHub.
+
+## Demo publicada
+
+Panel: https://qr-generator-three-opal.vercel.app
+
+QR de ejemplo: https://qr-generator-three-opal.vercel.app/r/demo-dinamico
+
+La clave del panel está en el archivo local privado .demo-access.txt, excluido de Git y de Vercel. Consulta demo/COMO_PROBAR.md para la demostración A/B. Los QR de localhost deben regenerarse con la dirección HTTPS pública.
 

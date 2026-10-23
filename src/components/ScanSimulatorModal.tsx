@@ -76,7 +76,7 @@ export const ScanSimulatorModal: React.FC<ScanSimulatorModalProps> = ({
         clientName: currentProject.clientName,
         projectName: currentProject.projectName,
       });
-    } finally {
+    } catch { /* Shared error banner: keep the previous result. */ } finally {
       setIsScanning(false);
     }
   };
@@ -92,7 +92,7 @@ export const ScanSimulatorModal: React.FC<ScanSimulatorModalProps> = ({
       );
       setUpdateSuccess(true);
       setTimeout(() => setUpdateSuccess(false), 3000);
-    } finally {
+    } catch { /* Shared error banner: keep the previous result. */ } finally {
       setIsUpdatingUrl(false);
     }
   };

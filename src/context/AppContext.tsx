@@ -1,39 +1,27 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { QRProject, AppUser, ScanEvent, ScanStatsSummary } from '../types';
-import { INITIAL_PROJECTS, INITIAL_USERS, INITIAL_SCANS } from '../data/initialData';
-import {
-  subscribeToProjects,
-  subscribeToUsers,
-  subscribeToScans,
-  saveProjectFirestore,
-  deleteProjectFirestore,
-  saveUserFirestore,
-  deleteUserFirestore,
-  recordScanFirestore,
-  seedFirestoreIfEmpty,
-} from '../utils/firestoreService';
+import { requestJson, ApiError } from '../utils/api';
 
 interface AppContextType {
   projects: QRProject[];
   users: AppUser[];
   scans: ScanEvent[];
   isLoading: boolean;
-  isFirebaseReady: boolean;
+  syncError: string | null;
+  requiresPanelAccess: boolean;
+  refreshData: () => Promise<void>;
   selectedProject: QRProject | null;
   setSelectedProject: (p: QRProject | null) => void;
   currentUser: AppUser | null;
   isAdmin: boolean;
   loginAsUser: (userId: string) => void;
-  // Project actions
   createProject: (data: Partial<QRProject>) => Promise<QRProject>;
   updateProject: (id: string, updates: Partial<QRProject>, changeReason?: string) => Promise<QRProject>;
   deleteProject: (id: string) => Promise<void>;
-  updateOneDriveUrl: (id: string, newUrl: string, reason: string) => Promise<QRProject>;
-  // User actions
+  updateOneDriveUrl: (id: string, url: string, reason: string) => Promise<QRProject>;
   createUser: (data: Partial<AppUser>) => Promise<AppUser>;
   updateUser: (id: string, updates: Partial<AppUser>) => Promise<AppUser>;
   deleteUser: (id: string) => Promise<void>;
-  // Stats & scanning
   recordSimulatedScan: (shortCode: string, deviceType?: string, os?: string) => Promise<ScanEvent>;
   getStats: () => ScanStatsSummary;
   getDynamicUrl: (shortCode: string) => string;
@@ -43,428 +31,105 @@ interface AppContextType {
   sharedAppUrl: string;
   resetDemo: () => Promise<void>;
 }
-
+interface ServerState { projects: QRProject[]; users: AppUser[]; scans: ScanEvent[] }
 const AppContext = createContext<AppContextType | undefined>(undefined);
-
-const LOCAL_STORAGE_KEY_PROJECTS = 'qr_dynamic_projects_v3';
-const LOCAL_STORAGE_KEY_USERS = 'qr_dynamic_users_v3';
-const LOCAL_STORAGE_KEY_SCANS = 'qr_dynamic_scans_v1';
-const LOCAL_STORAGE_KEY_CURRENT_USER = 'qr_dynamic_current_user_v3';
-const LOCAL_STORAGE_KEY_BASE_URL = 'qr_dynamic_base_url_v1';
-
+const PROFILE_KEY = 'qr_dynamic_current_user_v3';
+const BASE_URL_KEY = 'qr_dynamic_base_url_v1';
+function readPreference(key: string) {
+  try { return localStorage.getItem(key) || ''; } catch { return ''; }
+}
+function savePreference(key: string, value: string) {
+  try { if (value) localStorage.setItem(key, value); else localStorage.removeItem(key); } catch { /* Preferences are optional. */ }
+}
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [projects, setProjects] = useState<QRProject[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY_PROJECTS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch {}
-    return INITIAL_PROJECTS;
-  });
-
-  const [users, setUsers] = useState<AppUser[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY_USERS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch {}
-    return INITIAL_USERS;
-  });
-
-  const [currentUserId, setCurrentUserId] = useState<string>(() => {
-    try {
-      const saved =
-        localStorage.getItem(LOCAL_STORAGE_KEY_CURRENT_USER) ||
-        sessionStorage.getItem(LOCAL_STORAGE_KEY_CURRENT_USER);
-      if (saved) return saved;
-    } catch {}
-    return 'user-1';
-  });
-
-  const [scans, setScans] = useState<ScanEvent[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY_SCANS);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return INITIAL_SCANS;
-  });
-
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isFirebaseReady, setIsFirebaseReady] = useState<boolean>(false);
+  const [projects, setProjects] = useState<QRProject[]>([]);
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [scans, setScans] = useState<ScanEvent[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [requiresPanelAccess, setRequiresPanelAccess] = useState(false);
   const [selectedProject, setSelectedProject] = useState<QRProject | null>(null);
-
-  const currentUser = users.find((u) => u.id === currentUserId) || users[0] || null;
-  const isAdmin = true; // Open access: roles are descriptive only.
-
-  const apiFetch = useCallback((input: RequestInfo | URL, init: RequestInit = {}) => fetch(input, init), []);
-
-  useEffect(() => {
-    // Remove session values from earlier versions of the application.
-    for (const storage of [localStorage, sessionStorage]) {
-      storage.removeItem('qr_dynamic_token_v2');
-      storage.removeItem('qr_dynamic_auth_status_v2');
-    }
-
-    let unsubProjects: (() => void) | undefined;
-    let unsubUsers: (() => void) | undefined;
-    let unsubScans: (() => void) | undefined;
-
-    // Start with server baseline
-    Promise.allSettled([
-      fetch('/api/projects').then(r => r.ok ? r.json() : null),
-      fetch('/api/users').then(r => r.ok ? r.json() : null),
-      fetch('/api/scans').then(r => r.ok ? r.json() : null),
-    ]).then(([p, u, s]) => {
-      if (p.status === 'fulfilled' && p.value) setProjects(p.value);
-      if (u.status === 'fulfilled' && u.value) setUsers(u.value);
-      if (s.status === 'fulfilled' && s.value) setScans(s.value);
-      setIsLoading(false);
-    });
-
-    // Real-time synchronization with Firebase Cloud Firestore
-    void (async () => {
-      try {
-        await seedFirestoreIfEmpty();
-        unsubProjects = subscribeToProjects((items) => {
-          if (items.length > 0) {
-            setProjects(items);
-            setIsFirebaseReady(true);
-            setIsLoading(false);
-          }
-        });
-        unsubUsers = subscribeToUsers((items) => {
-          if (items.length > 0) {
-            setUsers(items);
-          }
-        });
-        unsubScans = subscribeToScans((items) => {
-          if (items.length > 0) {
-            setScans(items);
-          }
-        });
-      } catch (err) {
-        console.warn('Firebase synchronization fallback active:', err);
+  const [currentUserId, setCurrentUserId] = useState(() => readPreference(PROFILE_KEY));
+  const [customBaseUrl, setCustomBaseUrlState] = useState(() => import.meta.env.VITE_QR_BASE_URL?.trim() || readPreference(BASE_URL_KEY));
+  const revision = useRef(0);
+  const pendingWrites = useRef(0);
+  const currentUser = users.find(u => u.id === currentUserId && u.active) || users.find(u => u.active) || null;
+  const isAdmin = true; // Existing open-access pilot: profiles are not authentication.
+  const applyState = (state: ServerState) => {
+    setProjects(state.projects); setUsers(state.users); setScans(state.scans);
+  };
+  const refreshData = useCallback(async () => {
+    const startedAt = ++revision.current;
+    try {
+      const state = await requestJson<ServerState>('/api/state');
+      if (startedAt !== revision.current || pendingWrites.current) return;
+      applyState(state);
+      setRequiresPanelAccess(false);
+      setSyncError(null);
+    } catch (error) {
+      if (startedAt === revision.current) {
+        if (error instanceof ApiError && error.status === 401) setRequiresPanelAccess(true);
+        setSyncError(error instanceof Error ? error.message : 'No se pudo conectar con el servidor.');
       }
-    })();
-
-    return () => {
-      unsubProjects?.();
-      unsubUsers?.();
-      unsubScans?.();
-    };
+    } finally { setIsLoading(false); }
   }, []);
-
-  const loginAsUser = (userId: string) => {
-    setCurrentUserId(userId);
-    localStorage.setItem(LOCAL_STORAGE_KEY_CURRENT_USER, userId);
-  };
-
-  // Save to local storage whenever state changes
   useEffect(() => {
+    void refreshData();
+    const refresh = () => { if (!document.hidden) void refreshData(); };
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener('focus', refresh);
+    return () => { ++revision.current; window.clearInterval(timer); window.removeEventListener('focus', refresh); };
+  }, [refreshData]);
+  async function mutate<T>(path: string, method: string, data?: unknown): Promise<T> {
+    ++revision.current; ++pendingWrites.current;
     try {
-      localStorage.setItem(LOCAL_STORAGE_KEY_PROJECTS, JSON.stringify(projects));
-    } catch {}
-  }, [projects]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(LOCAL_STORAGE_KEY_USERS, JSON.stringify(users));
-    } catch {}
-  }, [users]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(LOCAL_STORAGE_KEY_SCANS, JSON.stringify(scans));
-    } catch {}
-  }, [scans]);
-
-  const [customBaseUrl, setCustomBaseUrlState] = useState<string>(() => {
-    try {
-      return localStorage.getItem(LOCAL_STORAGE_KEY_BASE_URL) || '';
-    } catch {
-      return '';
-    }
-  });
-
-  const setCustomBaseUrl = (url: string) => {
-    const trimmed = url.trim();
-    setCustomBaseUrlState(trimmed);
-    try {
-      if (trimmed) {
-        localStorage.setItem(LOCAL_STORAGE_KEY_BASE_URL, trimmed);
-      } else {
-        localStorage.removeItem(LOCAL_STORAGE_KEY_BASE_URL);
-      }
-    } catch {}
+      const value = await requestJson<T>(path, { method, body: data === undefined ? undefined : JSON.stringify(data) });
+      setSyncError(null);
+      return value;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) setRequiresPanelAccess(true);
+      setSyncError(error instanceof Error ? error.message : 'No se pudo guardar el cambio.');
+      throw error;
+    } finally { ++revision.current; --pendingWrites.current; }
+  }
+  const loginAsUser = (id: string) => { setCurrentUserId(id); savePreference(PROFILE_KEY, id); };
+  const setCustomBaseUrl = (url: string) => { const value = url.trim(); setCustomBaseUrlState(value); savePreference(BASE_URL_KEY, value); };
+  const isDevEnvironment = window.location.hostname.includes('ais-dev-');
+  const sharedAppUrl = isDevEnvironment ? `${window.location.protocol}//${window.location.hostname.replace('ais-dev-', 'ais-pre-')}${window.location.port ? ':' + window.location.port : ''}` : '';
+  const getDynamicUrl = (shortCode: string) => `${(customBaseUrl || window.location.origin).replace(/\/+$/, '')}/r/${encodeURIComponent(shortCode)}`;
+  const createProject = async (data: Partial<QRProject>) => {
+    const saved = await mutate<QRProject>('/api/projects', 'POST', data);
+    setProjects(prev => [saved, ...prev.filter(p => p.id !== saved.id)]);
+    return saved;
   };
-
-  // The private-preview warning only applies to Google AI Studio hosts.
-  // A normal Windows/LAN server is a valid destination for phone scans.
-  const isDevEnvironment = typeof window !== 'undefined' &&
-    window.location.hostname.includes('ais-dev-');
-
-  const sharedAppUrl = typeof window !== 'undefined' && window.location.hostname.includes('ais-dev-')
-    ? `${window.location.protocol}//${window.location.hostname.replace('ais-dev-', 'ais-pre-')}${window.location.port ? ':' + window.location.port : ''}`
-    : '';
-
-  const getDynamicUrl = (shortCode: string): string => {
-    if (customBaseUrl) {
-      const clean = customBaseUrl.replace(/\/+$/, '');
-      return `${clean}/r/${shortCode}`;
-    }
-    if (typeof window !== 'undefined') {
-      return `${window.location.origin}/r/${shortCode}`;
-    }
-    return `https://app.tuempresa.com/r/${shortCode}`;
+  const updateProject = async (id: string, updates: Partial<QRProject>, changeReason?: string) => {
+    const saved = await mutate<QRProject>(`/api/projects/${encodeURIComponent(id)}`, 'PUT', { ...updates, changeReason, changedBy: currentUser?.name });
+    setProjects(prev => prev.map(p => p.id === id ? saved : p));
+    return saved;
   };
-
-  const createProject = async (data: Partial<QRProject>): Promise<QRProject> => {
-    let finalCreated: QRProject;
-    try {
-      const res = await apiFetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        finalCreated = await res.json();
-      } else {
-        throw new Error('API create failed');
-      }
-    } catch {
-      // Local fallback
-      const now = new Date().toISOString();
-      const cleanCode = data.shortCode
-        ? data.shortCode.toLowerCase().replace(/[^a-z0-9-_]/g, '')
-        : (data.clientName || 'qr').toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 15) + '-' + Math.random().toString(36).substr(2, 4);
-
-      finalCreated = {
-        id: `proj-${Date.now()}`,
-        clientName: data.clientName || 'Cliente Particular',
-        projectName: data.projectName || 'Instalación',
-        shortCode: cleanCode,
-        destinationUrl: data.destinationUrl || 'https://onedrive.live.com',
-        destinationHistory: [],
-        notes: data.notes || '',
-        technician: data.technician || 'Jonatan Cusac',
-        technicianId: data.technicianId || 'user-1',
-        status: data.status || 'active',
-        qrDesign: data.qrDesign || {
-          foregroundColor: '#000000',
-          backgroundColor: '#ffffff',
-          showWatermark: false,
-          watermarkOpacity: 0,
-          logoUrl: '',
-          logoSize: 22,
-          logoMargin: 4,
-          errorCorrectionLevel: 'H',
-          dotStyle: 'rounded',
-          cornerSquareStyle: 'extra-rounded',
-          includeFrame: true,
-          frameText: 'USER MANUAL',
-          frameColor: '#000000',
-          includeClientLabel: false,
-        },
-        scanCount: 0,
-        createdAt: now,
-        updatedAt: now,
-      };
-    }
-
-    setProjects((prev) => [finalCreated, ...prev.filter((p) => p.id !== finalCreated.id)]);
-    void saveProjectFirestore(finalCreated).catch((err) => console.warn('Firestore project save fallback:', err));
-    return finalCreated;
+  const updateOneDriveUrl = (id: string, url: string, reason: string) => updateProject(id, { destinationUrl: url }, reason);
+  const deleteProject = async (id: string) => {
+    await mutate(`/api/projects/${encodeURIComponent(id)}`, 'DELETE');
+    setProjects(prev => prev.filter(p => p.id !== id));
   };
-
-  const updateProject = async (
-    id: string,
-    updates: Partial<QRProject>,
-    changeReason?: string
-  ): Promise<QRProject> => {
-    let updatedProject: QRProject | null = null;
-    try {
-      const res = await apiFetch(`/api/projects/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...updates, changeReason }),
-      });
-      if (res.ok) {
-        updatedProject = await res.json();
-      }
-    } catch (err) {
-      console.warn('Server update project failed, fallback to local', err);
-    }
-
-    if (!updatedProject) {
-      const current = projects.find((p) => p.id === id);
-      const now = new Date().toISOString();
-      let history = current?.destinationHistory ? [...current.destinationHistory] : [];
-      if (current && updates.destinationUrl && updates.destinationUrl !== current.destinationUrl) {
-        history.unshift({
-          id: `hist-${Date.now()}`,
-          url: current.destinationUrl,
-          changedAt: now,
-          changedBy: 'Administrador',
-          reason: changeReason || 'Actualización de carpeta OneDrive',
-        });
-      }
-      updatedProject = {
-        ...(current || (updates as QRProject)),
-        ...updates,
-        id,
-        destinationHistory: history,
-        updatedAt: now,
-      };
-    }
-
-    setProjects((prev) => prev.map((p) => (p.id === id ? updatedProject! : p)));
-    void saveProjectFirestore(updatedProject).catch((err) => console.warn('Firestore project update fallback:', err));
-    return updatedProject;
+  const createUser = async (data: Partial<AppUser>) => {
+    const saved = await mutate<AppUser>('/api/users', 'POST', data);
+    setUsers(prev => [...prev, saved]); return saved;
   };
-
-  const updateOneDriveUrl = async (id: string, newUrl: string, reason: string): Promise<QRProject> => {
-    return updateProject(id, { destinationUrl: newUrl }, reason);
+  const updateUser = async (id: string, updates: Partial<AppUser>) => {
+    const saved = await mutate<AppUser>(`/api/users/${encodeURIComponent(id)}`, 'PUT', updates);
+    setUsers(prev => prev.map(u => u.id === id ? saved : u)); return saved;
   };
-
-  const deleteProject = async (id: string): Promise<void> => {
-    try {
-      await apiFetch(`/api/projects/${id}`, { method: 'DELETE' });
-    } catch {}
-    setProjects((prev) => prev.filter((p) => p.id !== id));
-    void deleteProjectFirestore(id).catch((err) => console.warn('Firestore project delete fallback:', err));
+  const deleteUser = async (id: string) => {
+    await mutate(`/api/users/${encodeURIComponent(id)}`, 'DELETE');
+    setUsers(prev => prev.filter(u => u.id !== id));
   };
-
-  const createUser = async (data: Partial<AppUser>): Promise<AppUser> => {
-    let createdUser: AppUser;
-    try {
-      const res = await apiFetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        createdUser = await res.json();
-      } else {
-        throw new Error('API create user failed');
-      }
-    } catch {
-      createdUser = {
-        id: `user-${Date.now()}`,
-        name: data.name || 'Nuevo Usuario',
-        email: data.email || 'usuario@empresa.com',
-        role: data.role || 'technician',
-        active: true,
-        createdAt: new Date().toISOString().slice(0, 10),
-        installationsAssigned: 0,
-      };
-    }
-    setUsers((prev) => [...prev.filter((u) => u.id !== createdUser.id), createdUser]);
-    void saveUserFirestore(createdUser).catch((err) => console.warn('Firestore user save fallback:', err));
-    return createdUser;
+  const recordSimulatedScan = async (shortCode: string, deviceType = 'mobile', os = 'iOS') => {
+    const saved = await mutate<ScanEvent>('/api/scans/record', 'POST', { shortCode, deviceType, os, browser: os === 'iOS' ? 'Safari' : 'Chrome' });
+    setScans(prev => [saved, ...prev]);
+    setProjects(prev => prev.map(p => p.id === saved.projectId ? { ...p, scanCount: p.scanCount + 1, lastScannedAt: saved.scannedAt } : p));
+    return saved;
   };
-
-  const updateUser = async (id: string, updates: Partial<AppUser>): Promise<AppUser> => {
-    let updatedUser: AppUser | null = null;
-    try {
-      const res = await apiFetch(`/api/users/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-      if (res.ok) {
-        updatedUser = await res.json();
-      }
-    } catch {}
-
-    if (!updatedUser) {
-      const current = users.find((u) => u.id === id);
-      updatedUser = {
-        ...(current || (updates as AppUser)),
-        ...updates,
-        id,
-      };
-    }
-
-    setUsers((prev) => prev.map((u) => (u.id === id ? updatedUser! : u)));
-    void saveUserFirestore(updatedUser).catch((err) => console.warn('Firestore user update fallback:', err));
-    return updatedUser;
-  };
-
-  const deleteUser = async (id: string): Promise<void> => {
-    try {
-      await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
-    } catch {}
-    setUsers((prev) => prev.filter((u) => u.id !== id));
-    void deleteUserFirestore(id).catch((err) => console.warn('Firestore user delete fallback:', err));
-  };
-
-  const recordSimulatedScan = async (
-    shortCode: string,
-    deviceType: string = 'mobile',
-    os: string = 'iOS'
-  ): Promise<ScanEvent> => {
-    const project = projects.find((p) => p.shortCode.toLowerCase() === shortCode.toLowerCase());
-    let finalScan: ScanEvent | null = null;
-
-    try {
-      const res = await apiFetch('/api/scans/record', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shortCode,
-          clientName: project?.clientName,
-          projectName: project?.projectName,
-          deviceType,
-          os,
-          browser: os === 'iOS' ? 'Safari' : 'Chrome',
-        }),
-      });
-      if (res.ok) {
-        finalScan = await res.json();
-      }
-    } catch {}
-
-    if (!finalScan) {
-      const now = new Date().toISOString();
-      finalScan = {
-        id: `scan-${Date.now()}`,
-        projectId: project?.id || 'unknown',
-        clientName: project?.clientName || 'Cliente Simulado',
-        projectName: project?.projectName || 'Instalación',
-        shortCode,
-        scannedAt: now,
-        deviceType: (deviceType as any) || 'mobile',
-        os: os || 'iOS',
-        browser: 'Safari Móvil',
-        city: 'Madrid',
-        country: 'España',
-        ipMasked: '83.45.***.***',
-        redirectUrl: project?.destinationUrl || 'https://onedrive.live.com',
-      };
-    }
-
-    setScans((prev) => [finalScan!, ...prev]);
-    if (project) {
-      setProjects((prev) =>
-        prev.map((p) =>
-          p.id === project.id
-            ? { ...p, scanCount: (p.scanCount || 0) + 1, lastScannedAt: finalScan!.scannedAt }
-            : p
-        )
-      );
-    }
-    void recordScanFirestore(finalScan).catch((err) => console.warn('Firestore scan save fallback:', err));
-    return finalScan;
-  };
-
   const getStats = (): ScanStatsSummary => {
     const totalScans = projects.reduce((acc, p) => acc + (p.scanCount || 0), 0);
     const uniqueProjectsScanned = projects.filter((p) => (p.scanCount || 0) > 0).length;
@@ -477,7 +142,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const scansThisWeek = scans.filter((s) => new Date(s.scannedAt) >= oneWeekAgo).length;
 
     const mobileCount = scans.filter((s) => s.deviceType === 'mobile' || s.deviceType === 'tablet').length;
-    const mobilePercentage = scans.length > 0 ? Math.round((mobileCount / scans.length) * 100) : 85;
+    const mobilePercentage = scans.length > 0 ? Math.round((mobileCount / scans.length) * 100) : 0;
 
     // Device breakdown
     const devicesMap: Record<string, number> = {};
@@ -486,9 +151,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       devicesMap[type] = (devicesMap[type] || 0) + 1;
     });
     const deviceBreakdown = Object.entries(devicesMap).map(([name, value]) => ({ name, value }));
-    if (deviceBreakdown.length === 0) {
-      deviceBreakdown.push({ name: 'Móvil', value: 78 }, { name: 'Escritorio', value: 16 }, { name: 'Tablet', value: 6 });
-    }
+
 
     // Scans over the last 7 days
     const daysMap: Record<string, number> = {};
@@ -506,7 +169,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
     const scansOverTime = Object.entries(daysMap).map(([date, count]) => ({
       date,
-      scans: count || Math.floor(Math.random() * 5) + 2, // realistic fill if early days
+      scans: count,
     }));
 
     // Top projects
@@ -532,60 +195,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
   };
 
+
   const resetDemo = async () => {
-    try {
-      await apiFetch('/api/reset-demo', { method: 'POST' });
-    } catch {}
-    setProjects(INITIAL_PROJECTS);
-    setUsers(INITIAL_USERS);
-    setScans(INITIAL_SCANS);
-    setCurrentUserId('user-1');
-    localStorage.setItem(LOCAL_STORAGE_KEY_PROJECTS, JSON.stringify(INITIAL_PROJECTS));
-    localStorage.setItem(LOCAL_STORAGE_KEY_USERS, JSON.stringify(INITIAL_USERS));
-    localStorage.setItem(LOCAL_STORAGE_KEY_SCANS, JSON.stringify(INITIAL_SCANS));
-    localStorage.setItem(LOCAL_STORAGE_KEY_CURRENT_USER, 'user-1');
-    void seedFirestoreIfEmpty().catch(() => {});
+    const state = await mutate<ServerState>('/api/reset-demo', 'POST');
+    applyState(state);
   };
-
-  return (
-    <AppContext.Provider
-      value={{
-        projects,
-        users,
-        scans,
-        isLoading,
-        isFirebaseReady,
-        selectedProject,
-        setSelectedProject,
-        currentUser,
-        isAdmin,
-        loginAsUser,
-        createProject,
-        updateProject,
-        deleteProject,
-        updateOneDriveUrl,
-        createUser,
-        updateUser,
-        deleteUser,
-        recordSimulatedScan,
-        getStats,
-        getDynamicUrl,
-        customBaseUrl,
-        setCustomBaseUrl,
-        isDevEnvironment,
-        sharedAppUrl,
-        resetDemo,
-      }}
-    >
-      {children}
-    </AppContext.Provider>
-  );
+  return <AppContext.Provider value={{ projects, users, scans, isLoading, syncError, requiresPanelAccess, refreshData, selectedProject, setSelectedProject, currentUser, isAdmin, loginAsUser, createProject, updateProject, deleteProject, updateOneDriveUrl, createUser, updateUser, deleteUser, recordSimulatedScan, getStats, getDynamicUrl, customBaseUrl, setCustomBaseUrl, isDevEnvironment, sharedAppUrl, resetDemo }}>{children}</AppContext.Provider>;
 };
-
 export const useApp = (): AppContextType => {
   const context = useContext(AppContext);
-  if (!context) {
-    throw new Error('useApp must be used within an AppProvider');
-  }
+  if (!context) throw new Error('useApp must be used within an AppProvider');
   return context;
 };

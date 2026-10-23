@@ -246,7 +246,7 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
       onSaved(result);
     } catch (err) {
       setIsSubmitting(false);
-      setErrorMessage('Ocurrió un error al guardar. Por favor revisa los datos.');
+      setErrorMessage(err instanceof Error ? err.message : 'No se pudo guardar la instalación.');
     }
   };
 

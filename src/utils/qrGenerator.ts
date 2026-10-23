@@ -28,17 +28,30 @@ export async function renderQRToCanvas(
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  // Frame dimensions - Clean luxury sticker layout
+  // The frame hugs the QR quiet zone instead of adding a second wide margin.
+  // Keep four clear modules on every side so phone cameras can detect the code.
   const hasFrame = design.includeFrame;
-  const padding = hasFrame ? 24 : 16;
   const topHeaderHeight = hasFrame ? 50 : 0;
-
-  const totalWidth = size + padding * 2;
-  const totalHeight = size + padding * 2 + topHeaderHeight;
+  const frameInset = hasFrame ? 8 : 0;
+  const hasCenterLogo = Boolean(design.logoUrl?.trim());
+  const qr = QRCode.create(url, { errorCorrectionLevel: hasCenterLogo ? 'H' : 'M' });
+  const modules = qr.modules;
+  const moduleCount = modules.size;
+  const quietZoneModules = 4;
+  const availableWidth = size + (hasFrame ? 48 : 32) - frameInset * 2;
+  const cellSize = Math.max(4, Math.floor(availableWidth / (moduleCount + quietZoneModules * 2)));
+  const matrixSize = moduleCount * cellSize;
+  const quietZone = quietZoneModules * cellSize;
+  const qrBoxSize = matrixSize + quietZone * 2;
+  const totalWidth = qrBoxSize + frameInset * 2;
+  const totalHeight = totalWidth + topHeaderHeight;
+  const qrBoxX = frameInset;
+  const qrBoxY = topHeaderHeight + frameInset;
+  const qrX = qrBoxX + quietZone;
+  const qrY = qrBoxY + quietZone;
 
   canvas.width = totalWidth;
   canvas.height = totalHeight;
-
   // Canvas Background - Always pure white
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, totalWidth, totalHeight);
@@ -99,29 +112,6 @@ export async function renderQRToCanvas(
       ctx.fillText(bannerText, totalWidth / 2, bannerY);
     }
   }
-
-  // Generate a scanner-first QR matrix. Square, integer-aligned modules and a
-  // four-module quiet zone are deliberately used here: decorative/fractional
-  // modules look attractive on screen but are less reliable for phone cameras.
-  const hasCenterLogo = Boolean(design.logoUrl?.trim());
-  const qr = QRCode.create(url, {
-    errorCorrectionLevel: hasCenterLogo ? 'H' : 'M',
-  });
-
-  const modules = qr.modules;
-  const moduleCount = modules.size;
-  const quietZoneModules = 4;
-  const cellSize = Math.max(
-    4,
-    Math.floor(size / (moduleCount + quietZoneModules * 2))
-  );
-  const matrixSize = moduleCount * cellSize;
-  const quietZone = quietZoneModules * cellSize;
-  const qrBoxSize = matrixSize + quietZone * 2;
-  const qrBoxX = padding + Math.floor((size - qrBoxSize) / 2);
-  const qrBoxY = topHeaderHeight + padding + Math.floor((size - qrBoxSize) / 2);
-  const qrX = qrBoxX + quietZone;
-  const qrY = qrBoxY + quietZone;
 
   ctx.imageSmoothingEnabled = false;
 
@@ -204,4 +194,3 @@ export async function exportCanvasAsImage(
   link.click();
   document.body.removeChild(link);
 }
-

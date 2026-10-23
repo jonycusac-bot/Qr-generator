@@ -11,18 +11,19 @@
     "clean": "node -e \"const fs=require('fs'); fs.rmSync('dist', {recursive:true, force:true}); if(fs.existsSync('server.js')) fs.rmSync('server.js');\"",
     "lint": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
-    "db:check": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/neon-check.mjs"
+    "db:check": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/neon-check.mjs",
+    "db:migrate": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/migrate.mjs",
+    "test:neon": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --import tsx scripts/neon-integration.ts"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
+    "@neon/config": "^1.9.3",
     "@tailwindcss/vite": "^4.1.14",
     "@types/qrcode": "^1.5.6",
+    "@vercel/functions": "^3.10.3",
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
-    "firebase": "^13.1.0",
     "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
     "pg": "^8.23.1",
     "qrcode": "^1.5.4",
     "react": "^19.0.1",
